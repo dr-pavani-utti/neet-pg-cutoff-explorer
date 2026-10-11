@@ -1,0 +1,4 @@
+User-agent: *
+Allow: /
+
+Sitemap: https://dr-pavani-utti.github.io/neet-pg-cutoff-explorer/sitemap.xml

@@ -1,0 +1,69 @@
+# NEET PG Cutoff Explorer
+
+Static website showing NEET PG counselling closing ranks for every course × institute × quota × category × round, built from the official MCC allotment PDFs. There's no backend and no database: the PDFs are converted once into compact JSON that GitHub Pages serves along with the site.
+
+## Layout
+
+```
+raw/<year>/*.pdf          original MCC allotment PDFs (2023, 2024, 2025: round1-3, stray, special-stray)
+scripts/sources.json      which PDF is which round, per year
+scripts/build_data.py     PDF -> docs/data/<year>.json, <year>-rounds.json (+ CSV)
+scripts/build_map.py      state boundaries -> docs/assets/india-map.json (run once; ~58 KB)
+docs/                     the website (GitHub Pages root)
+  index.html, assets/     vanilla JS + SVG, no build step; caduceus.svg logo, india-map.json
+  data/index.json         list of available years
+  data/<year>.json        lookup tables + allotment rows (1.2–1.9 MB each, 0.4–0.5 MB gzipped)
+  data/<year>-rounds.json per-rank Round 2/3 outcomes; fetched only by the Rank lookup tab
+  data/<year>-allotments.csv  flat download (includes candidate category)
+  sitemap.xml, robots.txt     SEO; bump <lastmod> in sitemap.xml when data changes
+  google2cc8027b9bf0402d.html Google Search Console ownership verification (keep)
+```
+
+## Rebuild data
+
+```sh
+python3 -m venv .venv && .venv/bin/pip install -r requirements.txt
+.venv/bin/python scripts/build_data.py        # all years
+.venv/bin/python scripts/build_data.py 2025   # one year
+```
+
+The first run extracts ~37,000 PDF pages with pdfplumber (about 15 minutes on 16 cores; the 2023 Round 3 PDF alone is 5,739 pages). Extracted tables are cached in `build/`, after which a full rebuild takes seconds.
+
+The parser reads table headers, so it handles both layouts MCC uses:
+
+- single-round lists (Round 1, stray rounds): `SNo | Rank | Allotted Quota | Allotted Institute | Course | Alloted Category | Candidate Category | Remarks`
+- upgrade lists (Round 2, Round 3): one shared `Rank` column, a `Quota | Institute | Course | Remarks` block per earlier round, then the current round's allotment. Some years drop `SNo`, and 2025 Round 3 prints course codes (`GMED`) in the earlier-round blocks; those blocks are only read for the reporting status.
+
+Checks that fail the build instead of silently dropping rows: serial numbers must be contiguous `1..N` (wrapped numbers like `1000 0` are rejoined); lists without serial numbers must have strictly increasing ranks; any unrecognised wide row is an error. Upgrade lists are also cross-checked against earlier rounds: every rank that held a seat should reappear (2025 Round 3 misses one AFMS candidate; that's in the PDF).
+
+## Normalisation
+
+- **Courses** → degree (`MD`, `MS`, `MD/MS`, `DNB`, `DNB Diploma`, `Diploma`, `MCh`, `MPH`) + subject, via `DEGREES` and `SUBJECTS` in `build_data.py`. Subjects match on letters only, so wrapped words ("DERMATOLO GY") and MCC's many spellings merge. A course with no matching rule is printed as a warning at the end of the build; add a rule to `SUBJECTS`.
+- **Quotas** → `QUOTAS` (full names and the two-letter codes some PDFs use). Unknown quotas fail the build.
+- **Categories** → `Open`, `OBC`, `EWS`, `SC`, `ST`, each optionally ` PwD`. `GNYes` in stray lists = General PwD.
+- **States** come from the address: state name, then known cities/abbreviations, then the PIN code prefix.
+
+## Adding a year (e.g. 2026)
+
+1. Put the PDFs in `raw/2026/`.
+2. Add a `"2026"` entry to `scripts/sources.json`, listing rounds in counselling order. Use the round ids `R1`, `R2`, `R3`, `SR` (stray), `SSV` (special stray): the Year-on-year view and the predictor's "other years" column compare rounds by id.
+3. Run `scripts/build_data.py 2026` and commit `docs/data/`.
+
+The year picker on the site comes from `docs/data/index.json`. Seats are matched across years by degree + subject + institute name + PIN code + quota + seat category.
+
+## Preview locally
+
+```sh
+python3 -m http.server 8000 --directory docs   # open http://localhost:8000
+```
+
+## Publish
+
+GitHub repo `dr-pavani-utti/neet-pg-cutoff-explorer` → Settings → Pages → *Deploy from a branch* → `main`, folder `/docs`.
+
+## Data caveats
+
+- Ranks are NEET PG All-India ranks. Cutoffs are per quota and per allotted seat category; the predictor counts Open seats plus the candidate's own category (and PwD seats for PwD candidates).
+- "Open to all" quotas are All India, DNB and Deemed/Paid; university (DU, IP, BHU, AMU), NRI, minority and Armed Forces seats need separate eligibility. Armed Forces seats follow AFMS merit, so their NEET ranks look out of order.
+- Round 2 and 3 closing ranks count only seats allotted in that round (upgrades and fresh allotments), not seats retained from earlier rounds.
+- Unofficial. Verify with MCC before choice filling.
