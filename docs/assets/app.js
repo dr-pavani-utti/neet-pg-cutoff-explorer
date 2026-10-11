@@ -168,10 +168,69 @@ function writeHash() {
 }
 
 function setParam(changes, { full = false } = {}) {
+  trackChange(changes);
   Object.assign(app.p, changes);
   writeHash();
   if (full) render();
   else renderResults();
+}
+
+// ------------------------------------------------------------------ analytics (GoatCounter, cookieless)
+
+// index.html loads count.js with no_onload: the page sends one pageview per tab plus feature events.
+// GoatCounter ignores localhost, so local previews stay out of the stats. Calls made before the async
+// script loads are queued; if it never loads (ad blocker) the queue is dropped.
+const trackQueue = [];
+function count(vars) {
+  if (window.goatcounter?.count) window.goatcounter.count(vars);
+  else if (trackQueue.length < 50) trackQueue.push(vars);
+}
+document.querySelector("script[data-goatcounter]")?.addEventListener("load", () => {
+  while (trackQueue.length) window.goatcounter?.count?.(trackQueue.shift());
+});
+// GoatCounter events are just a name, so the detail goes into the path: "filter-quota/NRI".
+const track = (name, detail) => count({ path: detail ? `${name}/${String(detail).slice(0, 60)}` : name, title: name, event: true });
+
+// One pageview per tab; the path is the bare tab name so ranks and filters never reach the stats.
+let trackedView = null;
+function trackView() {
+  if (trackedView === app.view) return;
+  trackedView = app.view;
+  count({ path: `/${app.view}`, title: VIEWS.find(([v]) => v === app.view)[1] });
+}
+
+// Outbound links (footer, About, MCC) and the static per-year CSV downloads.
+document.addEventListener("click", (e) => {
+  const a = e.target.closest?.("a[href]");
+  if (!a) return;
+  if (a.hasAttribute("download")) track("download-csv", a.getAttribute("href").split("/").pop());
+  else if (a.target === "_blank") track("outbound", new URL(a.href).hostname);
+});
+
+const RANK_BANDS = [1000, 5000, 10000, 20000, 50000, 100000];
+const rankBand = (r) => {
+  const hi = RANK_BANDS.find((b) => r <= b);
+  return hi ? `${(RANK_BANDS[RANK_BANDS.indexOf(hi) - 1] || 0) + 1}-${hi}` : `${RANK_BANDS.at(-1)}+`;
+};
+const FILTER_KEYS = { deg: "degree", spec: "course", state: "state", quota: "quota", cat: "seat-category", round: "round", rid: "round", metric: "metric" };
+
+// Only the first key is the user's action; the rest are side effects.
+let typingTimer;
+function trackChange(changes) {
+  const [key, value] = Object.entries(changes)[0] || [];
+  const view = app.view;
+  if (key === "mycat" && value) track("select-category", value);
+  else if (key === "pwd") track("select-pwd", value ? "yes" : "no");
+  else if (key === "rank" || key === "q") {
+    clearTimeout(typingTimer); // wait until the user stops typing
+    typingTimer = setTimeout(() => {
+      const r = parseInt(value, 10);
+      if (key === "rank" && r > 0) track("enter-rank", rankBand(r));
+      if (key === "q" && value.trim()) track(`search-${view}`, value.trim().toLowerCase());
+    }, 1500);
+  } else if (key === "sort") track(`sort-${view}`, value);
+  else if (key === "all") track("show-all", view);
+  else if (FILTER_KEYS[key] && value) track(`filter-${FILTER_KEYS[key]}`, value);
 }
 
 // ------------------------------------------------------------------ controls
@@ -234,6 +293,7 @@ function renderProfile() {
       all: null,
       onchange: async (v) => {
         app.p.year = v;
+        track("select-year", v);
         writeHash();
         await loadYear(v);
         render();
@@ -262,6 +322,7 @@ function render() {
   const def = RENDERERS[app.view];
   view.replaceChildren(h("section", { class: "head" }, h("h2", {}, def.title), h("p", { class: "lede" }, def.lede)), def.controls ? def.controls() : "", h("div", { id: "results" }));
   renderResults();
+  trackView();
 }
 
 function renderResults() {
@@ -433,6 +494,7 @@ function gaugeSvg(s, rank, max) {
 }
 
 function downloadCsv(rows) {
+  track("download-csv", `${app.data.year}-${app.view}`);
   const rounds = app.data.rounds;
   const head = ["Degree", "Course", "Institute", "State", "Quota", "Seat category", ...rounds.flatMap((r) => [`${r.label} closing`, `${r.label} opening`, `${r.label} seats`]), "Address"];
   const q = (v) => `"${String(v ?? "").replace(/"/g, '""')}"`;
@@ -856,16 +918,18 @@ const TOUR = [
 ];
 
 // Spotlight + card. The page stays interactive, so users can fill the highlighted control right away.
-function startTour() {
+function startTour(source = "first-visit") {
   if ($(".tour-card")) return;
   localStorage.setItem(TOUR_KEY, "1"); // shown once, even if the tab is closed mid-tour
   let step = 0, raf = 0;
+  track("tour-start", source);
   const spot = h("div", { class: "tour-spot" });
   const card = h("div", { class: "tour-card", role: "dialog", "aria-live": "polite" });
-  const close = () => {
+  const close = (outcome = "skipped") => {
+    track("tour-end", `${outcome}-step-${step + 1}`);
     cancelAnimationFrame(raf); spot.remove(); card.remove(); document.removeEventListener("keydown", onKey);
   };
-  const go = (n) => { if (n >= TOUR.length) return close(); step = Math.max(0, n); paint(); };
+  const go = (n) => { if (n >= TOUR.length) return close("finished"); step = Math.max(0, n); paint(); };
   const onKey = (e) => { if (e.key === "Escape") close(); else if (e.key === "ArrowRight") go(step + 1); else if (e.key === "ArrowLeft") go(step - 1); };
   function paint() {
     const s = TOUR[step];
@@ -935,7 +999,7 @@ async function loadYear(year) {
   $("#foot").replaceChildren(
     h("p", {}, `${app.data.year}: ${fmt(app.data.allotments.length)} allotments, ${fmt(app.data.institutes.length)} institutes, ${app.data.rounds.map((r) => r.label).join(" · ")}. Unofficial; verify with `, ext(MCC, "MCC"), " before choice filling."),
     h("div", { class: "credit" },
-      h("div", { class: "credit-who" }, "Built by ", h("b", {}, CONTRIBUTOR.name), h("span", { class: "credit-links" }, ext(CONTRIBUTOR.linkedin, "LinkedIn"), ext(CONTRIBUTOR.portfolio, "Portfolio"), ext(REPO, "GitHub"), h("button", { class: "link", onclick: () => startTour() }, "Take the tour"))),
+      h("div", { class: "credit-who" }, "Built by ", h("b", {}, CONTRIBUTOR.name), h("span", { class: "credit-links" }, ext(CONTRIBUTOR.linkedin, "LinkedIn"), ext(CONTRIBUTOR.portfolio, "Portfolio"), ext(REPO, "GitHub"), h("button", { class: "link", onclick: () => startTour("replay") }, "Take the tour"))),
       h("a", { class: "credit-issue", href: `${REPO}/issues`, target: "_blank", rel: "noopener" }, "Report an issue"),
     ),
   );
