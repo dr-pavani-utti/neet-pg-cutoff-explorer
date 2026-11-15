@@ -165,6 +165,7 @@ function writeHash() {
   history.replaceState(null, "", `#${app.view}${qs ? "?" + qs : ""}`);
   const { year, mycat, pwd, rank } = app.p;
   localStorage.setItem(PROFILE_KEY, JSON.stringify({ year, mycat, pwd, rank }));
+  renderCtx();
 }
 
 function setParam(changes, { full = false } = {}) {
@@ -212,7 +213,7 @@ const rankBand = (r) => {
   const hi = RANK_BANDS.find((b) => r <= b);
   return hi ? `${(RANK_BANDS[RANK_BANDS.indexOf(hi) - 1] || 0) + 1}-${hi}` : `${RANK_BANDS.at(-1)}+`;
 };
-const FILTER_KEYS = { deg: "degree", spec: "course", state: "state", quota: "quota", cat: "seat-category", round: "round", rid: "round", metric: "metric" };
+const FILTER_KEYS = { deg: "degree", spec: "course", state: "state", quota: "quota", cat: "seat-category", round: "round", rid: "round", metric: "metric", chance: "chance" };
 
 // Only the first key is the user's action; the rest are side effects.
 let typingTimer;
@@ -235,17 +236,19 @@ function trackChange(changes) {
 
 // ------------------------------------------------------------------ controls
 
+// Select changes re-render the whole view so active-filter styling and the reset link stay in sync.
 function selectCtl(label, param, options, { all = "All", onchange } = {}) {
   const sel = h(
     "select",
-    { onchange: (e) => (onchange ? onchange(e.target.value) : setParam({ [param]: e.target.value })) },
+    { onchange: (e) => (onchange ? onchange(e.target.value) : setParam({ [param]: e.target.value }, { full: true })) },
     all != null ? h("option", { value: "" }, all) : null,
     options.map(([v, l]) => h("option", { value: v, selected: String(app.p[param] ?? "") === String(v) }, l)),
   );
-  return h("label", { class: "ctl" }, h("span", {}, label), sel);
+  const on = all === "All" && app.p[param];
+  return h("label", { class: `ctl${on ? " on" : ""}` }, h("span", {}, label), sel);
 }
 
-function inputCtl(label, param, attrs = {}) {
+function inputCtl(label, param, attrs = {}, cls = "") {
   let timer;
   const input = h("input", {
     value: app.p[param] || "",
@@ -255,16 +258,30 @@ function inputCtl(label, param, attrs = {}) {
       timer = setTimeout(() => setParam({ [param]: e.target.value }), 180);
     },
   });
-  return h("label", { class: "ctl" }, h("span", {}, label), input);
+  return h("label", { class: `ctl ${cls}` }, h("span", {}, label), input);
 }
 
 const roundOptions = () => app.data.rounds.map((r) => [r.id, r.label]);
 
 function quotaCtl() {
   const opts = [["open", "Open to all (AI · DNB · Deemed/Paid)"], ["all", "Every quota"], ...app.model.quotas.map((q) => [q, q])];
-  const sel = h("select", { onchange: (e) => setParam({ quota: e.target.value }) },
+  const sel = h("select", { onchange: (e) => setParam({ quota: e.target.value }, { full: true }) },
     opts.map(([v, l]) => h("option", { value: v, selected: quotaParam() === v }, l)));
-  return h("label", { class: "ctl" }, h("span", {}, "Quota"), sel);
+  return h("label", { class: `ctl quota${quotaParam() !== "open" ? " on" : ""}` }, h("span", {}, "Quota"), sel);
+}
+
+// Quota defaults to "open", so only a different choice counts as a filter.
+const FILTER_PARAMS = ["deg", "spec", "state", "quota", "cat", "q"];
+const activeFilters = () =>
+  [...FILTER_PARAMS, ...(app.view === "predict" ? ["chance"] : [])].filter((k) => (k === "quota" ? quotaParam() !== "open" : app.p[k]));
+
+// Called after every results render, so typing in Search also shows/hides the link.
+function syncReset() {
+  const slot = $(".filters .reset-slot");
+  if (!slot) return;
+  const n = activeFilters().length;
+  const clear = () => setParam(Object.fromEntries([...FILTER_PARAMS, "chance", "all", "sort"].map((k) => [k, ""])), { full: true });
+  slot.replaceChildren(n ? h("button", { class: "link reset", onclick: clear }, `Clear ${n} filter${n > 1 ? "s" : ""}`) : "");
 }
 
 function filterBar({ round = false, anyRound = false, search = true, spec = true, cat = true } = {}) {
@@ -278,7 +295,8 @@ function filterBar({ round = false, anyRound = false, search = true, spec = true
     selectCtl("State", "state", m.states.map((s) => [s, s])),
     quotaCtl(),
     cat ? selectCtl("Seat category", "cat", m.categories.map((c) => [c, c])) : null,
-    search ? inputCtl("Search", "q", { type: "search", placeholder: "Institute, city, course…" }) : null,
+    search ? inputCtl("Search", "q", { type: "search", placeholder: "Institute, city, course…" }, "search") : null,
+    h("span", { class: "reset-slot" }),
   );
 }
 
@@ -307,6 +325,30 @@ function renderProfile() {
     inputCtl("Your rank", "rank", { type: "number", min: 1, inputmode: "numeric", placeholder: "e.g. 12500" }),
   );
   ["year", "category", "pwd", "rank"].forEach((id, i) => (el.children[i].dataset.tour = id));
+  el.classList.toggle("needs-cat", !CANDIDATE_CATS.includes(app.p.mycat));
+}
+
+// Compact "2025 · OBC · PwD · #12,500" chip in the sticky tab bar, shown once the profile scrolls away.
+function renderCtx() {
+  const el = $("#ctx");
+  if (!el || !app.data) return;
+  const rank = myRank();
+  const cat = CANDIDATE_CATS.includes(app.p.mycat) ? app.p.mycat : "";
+  el.replaceChildren(
+    h("span", { class: "muted" }, app.data.year),
+    cat ? `${cat}${app.p.pwd === "1" ? " · PwD" : ""}` : "Choose category",
+    rank ? h("b", {}, `#${fmt(rank)}`) : "",
+    h("span", { class: "muted", "aria-hidden": "true" }, "✎"),
+  );
+}
+
+function initCtx() {
+  const el = $("#ctx");
+  el.addEventListener("click", () => {
+    window.scrollTo({ top: 0, behavior: "smooth" });
+    $(CANDIDATE_CATS.includes(app.p.mycat) ? '[data-tour="rank"] input' : '[data-tour="category"] select')?.focus({ preventScroll: true });
+  });
+  new IntersectionObserver(([e]) => el.classList.toggle("show", !e.isIntersecting)).observe($(".top"));
 }
 
 // ------------------------------------------------------------------ render shell
@@ -314,10 +356,11 @@ function renderProfile() {
 function render() {
   $("#tabs").replaceChildren(
     ...VIEWS.map(([id, label]) =>
-      h("a", { href: `#${id}`, class: id === app.view ? "active" : "", onclick: (e) => { e.preventDefault(); app.view = id; writeHash(); render(); } }, label),
+      h("a", { href: `#${id}`, class: id === app.view ? "active" : "", "aria-current": id === app.view ? "page" : null, onclick: (e) => { e.preventDefault(); app.view = id; writeHash(); render(); } }, label),
     ),
   );
   renderProfile();
+  renderCtx();
   const view = $("#view");
   const def = RENDERERS[app.view];
   view.replaceChildren(h("section", { class: "head" }, h("h2", {}, def.title), h("p", { class: "lede" }, def.lede)), def.controls ? def.controls() : "", h("div", { id: "results" }));
@@ -329,10 +372,36 @@ function renderResults() {
   const box = $("#results");
   if (!box) return;
   box.replaceChildren(RENDERERS[app.view].results());
+  syncReset();
 }
 
-function needProfile(msg) {
-  return h("div", { class: "empty" }, h("strong", {}, "Add your details"), h("p", {}, msg), h("p", { class: "muted" }, "Seats are reserved by category, so a rank only means something together with the category of seat it can take."));
+// Empty state with the missing profile fields inline, so nobody has to hunt for the header controls.
+function needProfile(msg, { cat: wantCat = true } = {}) {
+  const cat = wantCat ? h("select", { name: "mycat", required: true }, h("option", { value: "" }, "Choose category…"), CANDIDATE_CATS.map((c) => h("option", { value: c, selected: app.p.mycat === c }, c))) : null;
+  const pwd = wantCat ? h("select", { name: "pwd" }, h("option", { value: "" }, "No"), h("option", { value: "1", selected: app.p.pwd === "1" }, "Yes")) : null;
+  const input = h("input", { name: "rank", type: "number", min: 1, inputmode: "numeric", placeholder: "e.g. 12500", required: true, value: app.p.rank || "" });
+  const form = h(
+    "form",
+    {
+      class: "start",
+      onsubmit: (e) => {
+        e.preventDefault();
+        setParam({ ...(cat ? { mycat: cat.value, pwd: pwd.value } : {}), rank: input.value }, { full: true });
+      },
+    },
+    cat ? h("label", { class: "ctl" }, h("span", {}, "Your category"), cat) : null,
+    pwd ? h("label", { class: "ctl" }, h("span", {}, "PwD"), pwd) : null,
+    h("label", { class: "ctl" }, h("span", {}, "Your rank"), input),
+    h("button", { class: "btn", type: "submit" }, wantCat ? "Show my seats" : "Trace this rank"),
+  );
+  return h(
+    "div",
+    { class: "empty" },
+    h("strong", {}, wantCat ? "Tell us your category and rank" : "Enter a rank"),
+    h("p", {}, msg),
+    form,
+    h("p", { class: "muted small" }, "Seats are reserved by category, so a rank only means something together with the category of seat it can take. Saved on this device only."),
+  );
 }
 
 // ------------------------------------------------------------------ view: predictor
@@ -350,7 +419,7 @@ function predictResults() {
   const rank = myRank();
   const eligible = eligibleCats();
   if (!eligible || !rank) {
-    return needProfile("Enter your category and rank (top right). You'll get every seat open to you whose closing rank was at or beyond yours.");
+    return needProfile("You'll get every seat open to you whose closing rank was at or beyond yours, split into safe, likely and reach.");
   }
   const roundSel = app.p.round || app.data.rounds[0].id;
   const r = roundIndex(roundSel);
@@ -366,32 +435,60 @@ function predictResults() {
   const counts = { safe: 0, likely: 0, reach: 0 };
   rows.forEach((x) => counts[x.c]++);
   const bySpec = new Map();
-  rows.filter((x) => x.c !== "reach").forEach(({ s }) => bySpec.set(`${s.degree} ${s.spec}`, (bySpec.get(`${s.degree} ${s.spec}`) || 0) + 1));
-  const specChips = [...bySpec.entries()].sort((a, b) => b[1] - a[1]);
+  rows.filter((x) => x.c !== "reach").forEach(({ s }) => {
+    const k = `${s.degree} ${s.spec}`;
+    if (!bySpec.has(k)) bySpec.set(k, { deg: s.degree, spec: s.spec, n: 0 });
+    bySpec.get(k).n++;
+  });
+  const specChips = [...bySpec.entries()].sort((a, b) => b[1].n - a[1].n);
   const max = app.model.maxRank;
+  const pick = app.p.chance && counts[app.p.chance] != null ? app.p.chance : "";
+  const shown = pick ? rows.filter((x) => x.c === pick) : rows;
+  const chanceStat = (c, note) =>
+    h(
+      "button",
+      { class: `stat ${c}${pick === c ? " on" : ""}`, type: "button", "aria-pressed": String(pick === c), title: pick === c ? "Show all chances" : `Show only ${CHANCE_LABEL[c].toLowerCase()} seats`, onclick: () => setParam({ chance: pick === c ? "" : c }) },
+      h("span", { class: "stat-title" }, h("i", { class: "dot" }), CHANCE_LABEL[c]),
+      h("strong", {}, fmt(counts[c])),
+      h("small", {}, note),
+    );
+  const total = rows.length || 1;
+  const specOn = (v) => app.p.spec === v.spec && app.p.deg === v.deg;
 
   return h(
     "div",
     {},
     h(
       "div",
-      { class: "cards" },
-      card("Safe", counts.safe, `closing rank ≥ ${fmt(Math.round(rank * SAFE))}`, "safe"),
-      card("Likely", counts.likely, `closed between ${fmt(rank)} and ${fmt(Math.round(rank * SAFE) - 1)}`, "likely"),
-      card("Reach", counts.reach, `closed ${fmt(Math.ceil(rank * REACH))}–${fmt(rank - 1)}; needs luck`, "reach"),
-      card("Your position", `${pct(rank, max)}%`, `of the way to rank ${fmt(max)}, the last rank that got any seat this year`, ""),
-      app.index.years.length > 1
-        ? card("Consistent", steady, `of ${withPast.length} seats that also existed in other years reached your rank every year`, "safe")
-        : null,
+      { class: "summary" },
+      chanceStat("safe", `closing rank ≥ ${fmt(Math.round(rank * SAFE))}`),
+      chanceStat("likely", `closed ${fmt(rank)}–${fmt(Math.round(rank * SAFE) - 1)}`),
+      chanceStat("reach", `closed ${fmt(Math.ceil(rank * REACH))}–${fmt(rank - 1)}; needs luck`),
+      stat("Your position", `${pct(rank, max)}%`, `of the way to rank ${fmt(max)}, the last rank that got any seat this year`),
+      app.index.years.length > 1 ? stat("Consistent", fmt(steady), `of ${fmt(withPast.length)} seats seen in other years reached your rank every year`) : null,
     ),
+    rows.length
+      ? h("div", { class: "chance-bar", role: "img", "aria-label": `${counts.safe} safe, ${counts.likely} likely, ${counts.reach} reach` }, ["safe", "likely", "reach"].map((c) => h("i", { class: c, style: `width:${(100 * counts[c]) / total}%` })))
+      : null,
     h("p", { class: "muted small" }, `Counting ${[...eligible].join(", ")} seats${quotaParam() === "open" ? " in quotas open to everyone" : ""}. Change the Quota filter to add university, NRI, minority or AFMS seats you are eligible for.`),
     specChips.length
-      ? h("div", { class: "chips" }, h("span", { class: "muted" }, "Safe + likely seats by course:"), specChips.slice(0, 18).map(([name, n]) => h("span", { class: "chip" }, name, h("b", {}, n))))
+      ? h(
+          "div",
+          { class: "chips" },
+          h("span", { class: "chips-label" }, "Safe + likely by course:"),
+          specChips.slice(0, 18).map(([name, v]) =>
+            h("button", { class: `chip${specOn(v) ? " on" : ""}`, type: "button", onclick: () => setParam(specOn(v) ? { spec: "", deg: "" } : { spec: v.spec, deg: v.deg }, { full: true }) }, name, h("b", {}, fmt(v.n))),
+          ),
+        )
       : null,
     rows.length
-      ? seatTable(rows, { rank, max, showChance: true, history: true })
+      ? seatTable(shown, { rank, max, showChance: true, history: true })
       : h("div", { class: "empty" }, h("strong", {}, "No seat closed at or beyond this rank"), h("p", {}, "Try “Best of all rounds” or remove filters: later rounds often go to much later ranks.")),
   );
+}
+
+function stat(title, value, note) {
+  return h("div", { class: "stat" }, h("span", { class: "stat-title" }, title), h("strong", {}, value), h("small", {}, note));
 }
 
 function card(title, value, note, tone) {
@@ -459,7 +556,7 @@ function seatTable(rows, { rank = null, max, showChance = false, history = false
           "tr",
           {},
           showChance ? h("td", {}, h("span", { class: `badge ${c}` }, CHANCE_LABEL[c])) : null,
-          h("td", {}, h("span", { class: degClass(s.degree) }, s.degree), " ", s.spec, h("div", { class: "tags" }, h("span", { class: "tag" }, s.quota), h("span", { class: `tag cat-${s.cat.split(" ")[0]}` }, s.cat))),
+          h("td", { class: "course" }, h("span", { class: degClass(s.degree) }, s.degree), " ", s.spec, h("div", { class: "tags" }, h("span", { class: "tag" }, s.quota), h("span", { class: `tag cat-${s.cat.split(" ")[0]}` }, s.cat))),
           h("td", { class: "inst", title: s.address }, s.instName),
           h("td", {}, s.state),
           rounds.map((_, i) => h("td", { class: "num" }, s.close[i] == null ? h("span", { class: "muted" }, "–") : h("span", { title: `${s.ranks[i].length} seat(s); opening ${fmt(s.open[i])}` }, fmt(s.close[i]), h("small", {}, ` ×${s.ranks[i].length}`)))),
@@ -472,7 +569,7 @@ function seatTable(rows, { rank = null, max, showChance = false, history = false
   return h(
     "div",
     {},
-    h("div", { class: "table-meta" }, h("span", {}, `${fmt(rows.length)} seats (course × institute × quota × category)`), h("button", { class: "link", onclick: () => downloadCsv(rows) }, "Download CSV")),
+    h("div", { class: "table-meta" }, h("span", {}, h("strong", {}, fmt(rows.length)), " seats (course × institute × quota × category)", app.view === "predict" && app.p.chance ? ` · ${CHANCE_LABEL[app.p.chance]} only` : ""), h("button", { class: "link", onclick: () => downloadCsv(rows) }, "Download CSV")),
     h("div", { class: "scroll" }, table),
     rows.length > shown.length ? h("button", { class: "more", onclick: () => setParam({ all: "1" }) }, `Show all ${fmt(rows.length)} rows`) : null,
   );
@@ -660,7 +757,7 @@ function trendsResults() {
     h("div", { class: "scroll" }, h("table", { class: "seats" },
       h("thead", {}, h("tr", {}, h("th", {}, "Course"), years.map((y) => h("th", { class: "num" }, `${y} median / closing`)), h("th", {}, "Closing trend"), h("th", { class: "num" }, "Change"))),
       h("tbody", {}, specRows.map((row) => h("tr", {},
-        h("td", {}, h("span", { class: degClass(row.degree) }, row.degree), " ", row.spec),
+        h("td", { class: "course" }, h("span", { class: degClass(row.degree) }, row.degree), " ", row.spec),
         row.stats.map((st) => h("td", { class: "num" }, st ? [fmt(st.med), h("span", { class: "muted" }, " / "), h("span", { class: rank && st.close >= rank ? "hit" : "" }, fmt(st.close)), h("small", {}, ` ×${st.n}`)] : h("span", { class: "muted" }, "–"))),
         h("td", { html: sparkline(row.stats.map((st) => st?.close ?? null), years, rank) }),
         h("td", { class: "num" }, delta(row.stats.map((st) => st?.close ?? null))),
@@ -672,7 +769,7 @@ function trendsResults() {
     h("div", { class: "scroll" }, h("table", { class: "seats" },
       h("thead", {}, h("tr", {}, h("th", {}, "Course"), h("th", {}, "Institute"), h("th", {}, "State"), years.map((y) => h("th", { class: "num" }, y)), h("th", { class: "num" }, "Change"))),
       h("tbody", {}, shown.map(({ s, close, n }) => h("tr", {},
-        h("td", {}, h("span", { class: degClass(s.degree) }, s.degree), " ", s.spec, h("div", { class: "tags" }, h("span", { class: "tag" }, s.quota), h("span", { class: `tag cat-${s.cat.split(" ")[0]}` }, s.cat))),
+        h("td", { class: "course" }, h("span", { class: degClass(s.degree) }, s.degree), " ", s.spec, h("div", { class: "tags" }, h("span", { class: "tag" }, s.quota), h("span", { class: `tag cat-${s.cat.split(" ")[0]}` }, s.cat))),
         h("td", { class: "inst", title: s.address }, s.instName),
         h("td", {}, s.state),
         close.map((v, yi) => h("td", { class: "num" }, cell(v, n[yi]))),
@@ -800,7 +897,7 @@ function loadTrail(year) {
 function rankResults() {
   const d = app.data, m = app.model;
   const rank = myRank();
-  if (!rank) return needProfile("Enter a rank (top right) to trace what that rank got in every round.");
+  if (!rank) return needProfile("Trace what a rank got in every round, and what neighbouring ranks took.", { cat: false });
   const trail = trails[d.year];
   if (!trail || trail instanceof Promise) {
     loadTrail(d.year).catch((err) => console.error(err));
@@ -840,7 +937,7 @@ function rankResults() {
       h("tbody", {}, near.map(([v, i]) => {
         const a = d.allotments[i];
         const [degree, spec] = d.courses[a[3]];
-        return h("tr", { class: v === rank ? "me" : "" }, h("td", { class: "num" }, fmt(v)), h("td", {}, h("span", { class: degClass(degree) }, degree), " ", spec), h("td", { class: "inst" }, d.institutes[a[2]][0]), h("td", {}, d.institutes[a[2]][1]), h("td", {}, d.quotas[a[4]]), h("td", {}, d.categories[a[5]]));
+        return h("tr", { class: v === rank ? "me" : "" }, h("td", { class: "num" }, fmt(v)), h("td", { class: "course" }, h("span", { class: degClass(degree) }, degree), " ", spec), h("td", { class: "inst" }, d.institutes[a[2]][0]), h("td", {}, d.institutes[a[2]][1]), h("td", {}, d.quotas[a[4]]), h("td", {}, d.categories[a[5]]));
       })),
     )),
     h("p", { class: "muted small" }, "Ranks missing from the list did not take a seat in that round."),
@@ -967,16 +1064,31 @@ function startTour(source = "first-visit") {
 
 // ------------------------------------------------------------------ tooltip
 
+// Hover on desktop; on touch screens a tap shows the tip for a few seconds.
 function initTooltip() {
   const tip = $("#tooltip");
+  let hideTimer;
+  const show = (el, x0, y0) => {
+    tip.textContent = el.dataset.tip;
+    tip.hidden = false;
+    const x = Math.max(8, Math.min(x0 + 14, window.innerWidth - tip.offsetWidth - 8));
+    const y = y0 + 16 + tip.offsetHeight > window.innerHeight ? y0 - tip.offsetHeight - 12 : y0 + 16;
+    tip.style.transform = `translate(${x}px, ${y}px)`;
+  };
   document.addEventListener("mousemove", (e) => {
     const el = e.target.closest?.("[data-tip]");
     if (!el) { tip.hidden = true; return; }
-    tip.textContent = el.dataset.tip;
-    tip.hidden = false;
-    const x = Math.min(e.clientX + 14, window.innerWidth - tip.offsetWidth - 8);
-    tip.style.transform = `translate(${x}px, ${e.clientY + 16}px)`;
+    show(el, e.clientX, e.clientY);
   });
+  document.addEventListener("pointerdown", (e) => {
+    if (e.pointerType === "mouse") return;
+    const el = e.target.closest?.("[data-tip]");
+    clearTimeout(hideTimer);
+    if (!el) { tip.hidden = true; return; }
+    show(el, e.clientX, e.clientY);
+    hideTimer = setTimeout(() => (tip.hidden = true), 3500);
+  });
+  window.addEventListener("scroll", () => (tip.hidden = true), { passive: true });
 }
 
 // ------------------------------------------------------------------ boot
@@ -1008,6 +1120,7 @@ async function loadYear(year) {
 async function boot() {
   readHash();
   initTooltip();
+  initCtx();
   try {
     const res = await fetch("data/index.json");
     app.index = await res.json();

@@ -32,6 +32,17 @@ QUOTA_ORDER = ["All India", "DNB Quota", "Deemed/Paid Seats"]
 CAT_ORDER = ["Open", "EWS", "OBC", "SC", "ST", "Open PwD", "EWS PwD", "OBC PwD", "SC PwD", "ST PwD"]
 TODAY = datetime.date.today().isoformat()
 esc = html.escape
+# Bump with docs/index.html's ?v= when assets/style.css or assets/theme.js change, so cached copies refresh.
+ASSET_V = 2
+# Same button as docs/index.html; assets/theme.js wires it up.
+THEME_TOGGLE = (
+    '<button class="theme-toggle" type="button" data-theme-toggle aria-label="Switch theme">'
+    '<span class="to-dark"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" '
+    'stroke-linejoin="round" aria-hidden="true"><path d="M20 14.5A8 8 0 0 1 9.5 4a8 8 0 1 0 10.5 10.5Z"/></svg>Dark<span class="m"> mode</span></span>'
+    '<span class="to-light"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" '
+    'aria-hidden="true"><circle cx="12" cy="12" r="4"/><path d="M12 2.5v2M12 19.5v2M2.5 12h2M19.5 12h2M5.3 5.3l1.4 1.4'
+    'M17.3 17.3l1.4 1.4M5.3 18.7l1.4-1.4M17.3 6.7l1.4-1.4"/></svg>Light<span class="m"> mode</span></span></button>'
+)
 
 
 def slug(text):
@@ -114,6 +125,7 @@ def page(path, title, description, crumbs, body, jsonld=()):
   <meta name="description" content="{esc(description)}">
   <meta name="robots" content="index, follow, max-image-preview:large">
   <meta name="author" content="{AUTHOR['name']}">
+  <meta name="theme-color" content="#f5f1e8">
   <link rel="canonical" href="{url}">
   <meta property="og:type" content="article">
   <meta property="og:site_name" content="NEET PG Cutoff Explorer">
@@ -126,19 +138,22 @@ def page(path, title, description, crumbs, body, jsonld=()):
   <meta name="twitter:image" content="{SITE}assets/og.png">
   <script type="application/ld+json">{json.dumps({"@context": "https://schema.org", "@graph": graph}, ensure_ascii=False)}</script>
   <link rel="icon" href="{up}assets/caduceus.svg" type="image/svg+xml">
-  <link rel="stylesheet" href="{up}assets/style.css">
+  <script src="{up}assets/theme.js?v={ASSET_V}"></script>
+  <link rel="stylesheet" href="{up}assets/style.css?v={ASSET_V}">
   <script data-goatcounter="https://dr-pavani-utti.goatcounter.com/count" async src="//gc.zgo.at/count.js"></script>
 </head>
 <body>
   <header class="top">
-    <a class="brand plain" href="{up}">
-      <span class="logo" aria-hidden="true"><i></i></span>
+    <div class="brand">
+      <a class="plain" href="{up}" aria-hidden="true" tabindex="-1"><span class="logo"><i></i></span></a>
       <div>
-        <strong class="brand-name">NEET PG Cutoff Explorer</strong>
+        <a class="plain brand-name" href="{up}">NEET PG <em>Cutoff Explorer</em></a>
         <p class="sub">Closing ranks from official MCC allotment lists</p>
+        <p class="byline"><span>Built by <b>{AUTHOR['name']}</b></span><a href="{AUTHOR['linkedin']}" target="_blank" rel="noopener">LinkedIn</a><a href="{AUTHOR['portfolio']}" target="_blank" rel="noopener">Portfolio</a></p>
       </div>
-    </a>
+    </div>
     <a class="cta" href="{up}#predict">Open the rank predictor →</a>
+    {THEME_TOGGLE}
   </header>
   <main class="static">
     <nav class="crumbs" aria-label="Breadcrumb">{crumb_html}</nav>
